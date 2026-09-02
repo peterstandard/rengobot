@@ -42,6 +42,25 @@ def next_colour(channel_id):
     node = game.get_last_node()
     return 1 if ("B" in node.properties() or "AB" in node.properties()) else 0
 
+def get_last_move_formatted(channel_id):
+    if not os.path.exists(str(channel_id) + ".sgf"):
+        return None
+    try:
+        with open(str(channel_id) + ".sgf", "rb") as f:
+            game = sgf.Sgf_game.from_bytes(f.read())
+        node = game.get_last_node()
+        if node == game.root:
+            return None
+        for col_prop in ("B", "W"):
+            if node.has_property(col_prop):
+                row, col = node.get(col_prop)
+                col_letter = chr(col + ord('A') + (1 if col >= 8 else 0))
+                row_number = str(row + 1)
+                return f"{col_letter}{row_number}"
+    except Exception:
+        pass
+    return None
+
 # Could be an illegal move, or maybe I don't understand the message
 # outputs to <channel_id>.png
 def play_move(channel_id, messagestr, player, overwrite=False):

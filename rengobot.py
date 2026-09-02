@@ -155,10 +155,15 @@ async def play(ctx, arg):
                 return
 
 
-    if state[i][1] != "debug" and state[i][3] != [] and datetime.now()-datetime.strptime(state[i][3][-1],format)<timedelta(seconds=4):
-        return #silent error
-
     arg = arg.strip()
+    if state[i][1] != "debug" and state[i][3] != [] and datetime.now()-datetime.strptime(state[i][3][-1],format)<timedelta(seconds=4):
+        last_move = sgfengine.get_last_move_formatted(str(channel_id))
+        dropped_move = arg.upper()
+        if last_move:
+            await ctx.send(f"Last accepted move: {last_move}. Move {dropped_move} dropped by anti-spam.")
+        else:
+            await ctx.send(f"Move {dropped_move} dropped by anti-spam.")
+        return
     legal_moves=[chr(col+ord('A')-1)+str(row) for col in range(1,21) if col!=9 for row in range(1,20)]
     legal_moves+=[chr(col+ord('a')-1)+str(row) for col in range(1,21) if col!=9 for row in range(1,20)]
     if arg not in legal_moves:
