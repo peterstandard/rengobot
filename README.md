@@ -40,8 +40,7 @@ Make sure to run the bot in an environment with read/write permissions
 Copy `.env.example` to `.env` to configure your credentials and server details without hardcoding them into code:
 ```env
 DISCORD_TOKEN=your_bot_token_here
-SERVER_ID=your_server_id
-SERVER_NAME=Your Server Name
+PERMITTED_SERVER_IDS=server_id_1,server_id_2
 PERMITTED_CHANNEL_IDS=channel_id_1,channel_id_2
 ADMIN_IDS=user_id_1,user_id_2
 TEACHER_IDS=user_id_1,user_id_2

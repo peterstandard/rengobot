@@ -2,6 +2,7 @@ import ast
 import asyncio
 import os
 os.environ["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + os.environ.get("PATH", "")
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -10,23 +11,8 @@ from discord.ext import commands, tasks
 
 import sgfengine
 
-# import requests
-# import raw_input
-
-# We don't use fancy slash commands here. It seems there is this library for python but it looks a bit more involved.
-# https://pypi.org/project/discord-py-slash-command/
-
-# res = requests.get("https://sh.rustup.rs")
-# print(res)
-# os.system("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
-# os.system("cargo install sgf-render")
-# os.system("cargo --version")
-# raw_input()
-
 intents = discord.Intents.default()
 intents.message_content = True
-# client = discord.Client(intents=intents)
-# bot = commands.Bot(command_prefix='$', intents=intents)
 bot = commands.Bot(command_prefix='$', intents=intents, help_command=None, case_insensitive=True)
 
 def load_env(env_path=".env"):
@@ -49,24 +35,22 @@ def get_int_list(env_var, default=None):
         return [int(x.strip()) for x in val.split(",") if x.strip().isdigit()]
     return default if default is not None else []
 
-min_time_player= timedelta(seconds=1) # in random games, min time between same player plays (default days=1)
-time_to_skip= timedelta(seconds=1) # in queue games, how much time to wait for the next move
+min_time_player = timedelta(seconds=1) # in random games, min time between same player plays (default days=1)
+time_to_skip = timedelta(seconds=1) # in queue games, how much time to wait for the next move
 min_players = 2
 
-# People who can start and resign games :O
-# Later we might replace this with checking for a role.
-admins = get_int_list("ADMIN_IDS", [463380651467472896, 907684282145849375, 631824578934734848, 489423695102869535])
+# Global bot admins (can manage all games and execute $shutdown)
+admins = get_int_list("ADMIN_IDS", [])
 
-teachers = get_int_list("TEACHER_IDS", [463380651467472896, 907684282145849375, 631824578934734848, 489423695102869535])
+# Teachers for teachers mode
+teachers = get_int_list("TEACHER_IDS", [])
 
-server_id = int(os.environ.get("SERVER_ID", 1060261462733496320))
+# Server & Channel filtering (empty allows all)
+permitted_server_ids = get_int_list("PERMITTED_SERVER_IDS", [])
+permitted_channel_ids = get_int_list("PERMITTED_CHANNEL_IDS", [])
 
-server_name = os.environ.get("SERVER_NAME", "Columbus Go Club")
-
-permitted_channel_ids = get_int_list("PERMITTED_CHANNEL_IDS", [1115612796734943374])
-
-white_stone= "<:white_stone:882731089548939314>"
-black_stone= "<:black_stone:882730888453046342>"
+white_stone = "<:white_stone:882731089548939314>"
+black_stone = "<:black_stone:882730888453046342>"
 
 token = os.environ.get("DISCORD_TOKEN")
 if not token:
@@ -76,12 +60,64 @@ if not token:
     else:
         raise ValueError("Discord token not found! Provide DISCORD_TOKEN in .env or token.txt")
 
-format="%Y_%m_%d_%H_%M_%S_%f"
+format = "%Y_%m_%d_%H_%M_%S_%f"
 
-def format_game_message(channel_id, state_tuple=None, next_player_display=None, ping_mention=None, title_override=None):
-    info = sgfengine.get_game_state(str(channel_id))
+def is_permitted(ctx):
+    if not ctx.guild:
+        return False
+    if permitted_server_ids and ctx.guild.id not in permitted_server_ids:
+        return False
+    if permitted_channel_ids and ctx.channel.id not in permitted_channel_ids:
+        return False
+    return True
+
+def is_game_admin(ctx):
+    if ctx.author.id in admins:
+        return True
+    if ctx.guild and (ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_guild):
+        return True
+    return False
+
+def get_game_key(ctx):
+    channel_id = ctx.channel.id
+    if ctx.guild:
+        combined = f"{ctx.guild.id}_{channel_id}"
+        legacy_sgf = f"{channel_id}.sgf"
+        combined_sgf = f"{combined}.sgf"
+        # Auto-migrate legacy files on disk if present
+        if os.path.exists(legacy_sgf) and not os.path.exists(combined_sgf):
+            try:
+                os.rename(legacy_sgf, combined_sgf)
+                if os.path.exists(f"{channel_id}.png"):
+                    os.rename(f"{channel_id}.png", f"{combined}.png")
+                print(f"[RengoBot] Migrated legacy game {legacy_sgf} -> {combined_sgf}")
+            except Exception as e:
+                print(f"[RengoBot] Error migrating legacy game files: {e}")
+        return combined
+    return str(channel_id)
+
+def find_game(state, ctx):
+    channel_id = ctx.channel.id
+    game_key = get_game_key(ctx)
+    for idx, s in enumerate(state):
+        entry_id = str(s[0])
+        if entry_id == str(channel_id) or entry_id == game_key:
+            return idx
+    return None
+
+async def get_player_display(guild, user_id):
+    if not guild:
+        return f"Player {user_id}", f"<@{user_id}>"
+    try:
+        member = await guild.fetch_member(user_id)
+        return member.display_name, member.mention
+    except Exception:
+        return f"Player {user_id}", f"<@{user_id}>"
+
+def format_game_message(game_key, state_tuple=None, next_player_display=None, ping_mention=None, title_override=None):
+    info = sgfengine.get_game_state(str(game_key))
     if not info:
-        return discord.File(f"{channel_id}.png"), ""
+        return discord.File(f"{game_key}.png"), ""
 
     lines = []
 
@@ -113,18 +149,12 @@ def format_game_message(channel_id, state_tuple=None, next_player_display=None, 
     elif info.get("consecutive_passes", 0) == 1:
         lines.append("ℹ️ *1 pass recorded. A second consecutive pass will end the game.*")
 
-    file = discord.File(f"{channel_id}.png")
+    file = discord.File(f"{game_key}.png")
     return file, "\n".join(lines)
-
-# The state is a list of tuples (channel_id, "queue"/"random", last_players, last_times, [black_queue, white_queue])
-
-@bot.command()
-async def blah(ctx):
-    await ctx.send("blah")
 
 @bot.command()
 async def help(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
+    if not is_permitted(ctx): return
     await ctx.send(
         "**Commands:**\n"
         "`$help`: shows this help\n"
@@ -139,7 +169,7 @@ async def help(ctx):
         "`$sgf`: get the SGF file of the current game\n"
         "`$newgame <mode> <handicap> <komi>`: starts a game (admin only)\n"
         "`$resign <B/W>`: resigns the game and returns final SGF (admin only)\n"
-        "`$shutdown`: cleanly shuts down the bot (admin only)\n\n"
+        "`$shutdown`: cleanly shuts down the bot (global admin only)\n\n"
         "**Game Modes:**\n"
         "• `random`: Open to all! No queue; players alternate moves with consecutive-play limits.\n"
         "• `anarchy`: Open to all! No queue and no consecutive-play or color limits.\n"
@@ -149,20 +179,18 @@ async def help(ctx):
 
 @bot.command()
 async def play(ctx, arg):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
     user = ctx.author
-    guild= ctx.guild
+    guild = ctx.guild
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state))  if state[i][0] == channel_id] # This is where I should use a fancy next()
-    if not filter_state:
-        # await ctx.send("No active game in this channel!")
+    idx = find_game(state, ctx)
+    if idx is None:
         return
-
-    i= filter_state[0]
+    i = idx
+    state[i] = (game_key, state[i][1], state[i][2], state[i][3], state[i][4])
 
     if state[i][1] in ["queue", "teachers"] and user.id not in state[i][4][0]+state[i][4][1]:
         await ctx.send("Player hasn't joined yet! Join us with `$join`")
@@ -172,7 +200,7 @@ async def play(ctx, arg):
         await ctx.send("Waiting for more players to join! Minimum {} per team".format(min_players))
         return
 
-    colour= sgfengine.next_colour(str(channel_id))
+    colour = sgfengine.next_colour(game_key)
 
     if (state[i][1] == "queue" and user.id!= state[i][4][colour][0]) or (state[i][1]=="teachers" and ((colour==0 and user.id!=state[i][4][0][0]) or (colour==1 and user.id not in state[i][4][1]))):
         await ctx.send("It is not your turn yet!")
@@ -197,7 +225,7 @@ async def play(ctx, arg):
 
     arg = arg.strip()
     if state[i][1] != "debug" and state[i][3] != [] and datetime.now()-datetime.strptime(state[i][3][-1],format)<timedelta(seconds=4):
-        last_move = sgfengine.get_last_move_formatted(str(channel_id))
+        last_move = sgfengine.get_last_move_formatted(game_key)
         dropped_move = arg.upper()
         if last_move:
             await ctx.send(f"Last accepted move: {last_move}. Move {dropped_move} dropped by anti-spam.")
@@ -211,12 +239,11 @@ async def play(ctx, arg):
         return
 
     try:
-        sgfengine.play_move(str(channel_id), arg, user.display_name)
+        sgfengine.play_move(game_key, arg, user.display_name)
     except ValueError as e:
         await ctx.send(str(e))
         return
 
-    # move registered, let's do the other things
     state[i][2].append(user.id)
     state[i][3].append(datetime.now().strftime(format))
 
@@ -231,38 +258,34 @@ async def play(ctx, arg):
     next_player_text = None
     mention_content = None
     if state[i][1]=="queue":
-        next_player=(await guild.fetch_member(state[i][4][1-colour][0]))
-        next_player_text = next_player.display_name
-        mention_content = next_player.mention
+        next_player_text, mention_content = await get_player_display(guild, state[i][4][1-colour][0])
     elif state[i][1]=="teachers" and colour==1:
-        next_player=(await guild.fetch_member(state[i][4][1-colour][0]))
-        next_player_text = next_player.display_name
-        mention_content = next_player.mention
+        next_player_text, mention_content = await get_player_display(guild, state[i][4][1-colour][0])
     elif state[i][1]=="teachers" and colour==0:
         next_player_text = "Teachers"
         mention_content = None
 
-    file, msg = format_game_message(channel_id, state[i], next_player_display=next_player_text, ping_mention=mention_content)
+    file, msg = format_game_message(game_key, state[i], next_player_display=next_player_text, ping_mention=mention_content)
     await ctx.send(content=msg, file=file)
 
     with open("state.txt", "w") as f: f.write(repr(state))
 
 @bot.command(name="pass")
 async def pass_turn(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
     user = ctx.author
-    guild= ctx.guild
+    guild = ctx.guild
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state)) if state[i][0] == channel_id]
-    if not filter_state:
+    idx = find_game(state, ctx)
+    if idx is None:
         await ctx.send("No active game in this channel!")
         return
 
-    i= filter_state[0]
+    i = idx
+    state[i] = (game_key, state[i][1], state[i][2], state[i][3], state[i][4])
 
     if state[i][1] in ["queue", "teachers"] and user.id not in state[i][4][0]+state[i][4][1]:
         await ctx.send("Player hasn't joined yet! Join us with `$join`")
@@ -272,7 +295,7 @@ async def pass_turn(ctx):
         await ctx.send("Waiting for more players to join! Minimum {} per team".format(min_players))
         return
 
-    colour= sgfengine.next_colour(str(channel_id))
+    colour = sgfengine.next_colour(game_key)
 
     if (state[i][1] == "queue" and user.id!= state[i][4][colour][0]) or (state[i][1]=="teachers" and ((colour==0 and user.id!=state[i][4][0][0]) or (colour==1 and user.id not in state[i][4][1]))):
         await ctx.send("It is not your turn yet!")
@@ -296,14 +319,14 @@ async def pass_turn(ctx):
                 return
 
     if state[i][1] != "debug" and state[i][3] != [] and datetime.now()-datetime.strptime(state[i][3][-1],format)<timedelta(seconds=4):
-        last_move = sgfengine.get_last_move_formatted(str(channel_id))
+        last_move = sgfengine.get_last_move_formatted(game_key)
         if last_move:
             await ctx.send(f"Last accepted move: {last_move}. Move PASS dropped by anti-spam.")
         else:
             await ctx.send("Move PASS dropped by anti-spam.")
         return
 
-    sgfengine.play_pass(str(channel_id), user.display_name)
+    sgfengine.play_pass(game_key, user.display_name)
 
     state[i][2].append(user.id)
     state[i][3].append(datetime.now().strftime(format))
@@ -319,40 +342,34 @@ async def pass_turn(ctx):
     next_player_text = None
     mention_content = None
     if state[i][1]=="queue":
-        next_player=(await guild.fetch_member(state[i][4][1-colour][0]))
-        next_player_text = next_player.display_name
-        mention_content = next_player.mention
+        next_player_text, mention_content = await get_player_display(guild, state[i][4][1-colour][0])
     elif state[i][1]=="teachers" and colour==1:
-        next_player=(await guild.fetch_member(state[i][4][1-colour][0]))
-        next_player_text = next_player.display_name
-        mention_content = next_player.mention
+        next_player_text, mention_content = await get_player_display(guild, state[i][4][1-colour][0])
     elif state[i][1]=="teachers" and colour==0:
         next_player_text = "Teachers"
         mention_content = None
 
-    file, msg = format_game_message(channel_id, state[i], next_player_display=next_player_text, ping_mention=mention_content)
+    file, msg = format_game_message(game_key, state[i], next_player_display=next_player_text, ping_mention=mention_content)
     await ctx.send(content=msg, file=file)
 
     with open("state.txt", "w") as f: f.write(repr(state))
 
 @bot.command()
-async def edit(ctx, arg): #literally play but with less things
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    # It should wait until the queue has 4 players or so
-    channel_id= ctx.channel.id
+async def edit(ctx, arg):
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
     user = ctx.author
-    guild= ctx.guild
+    guild = ctx.guild
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state))  if state[i][0] == channel_id]
-    if not filter_state:
+    idx = find_game(state, ctx)
+    if idx is None:
         await ctx.send("No active game in this channel!")
         return
 
-    i= filter_state[0]
-    colour= sgfengine.next_colour(str(channel_id))
+    i = idx
+    colour = sgfengine.next_colour(game_key)
 
     if len(state[i][2])==0 or (state[i][1] != "debug" and (state[i][2][-1] != user.id or datetime.now()-datetime.strptime(state[i][3][-1],format) > timedelta(minutes=5))):
         await ctx.send("You cannot edit this move!")
@@ -366,7 +383,7 @@ async def edit(ctx, arg): #literally play but with less things
         return
 
     try:
-        sgfengine.play_move(str(channel_id), arg, user.display_name, True)
+        sgfengine.play_move(game_key, arg, user.display_name, True)
     except ValueError as e:
         await ctx.send(str(e))
         return
@@ -374,76 +391,68 @@ async def edit(ctx, arg): #literally play but with less things
     next_player_text = None
     mention_content = None
     if state[i][1]=="queue":
-        next_player=(await guild.fetch_member(state[i][4][colour][0]))
-        next_player_text = next_player.display_name
-        mention_content = next_player.mention
+        next_player_text, mention_content = await get_player_display(guild, state[i][4][colour][0])
     elif state[i][1]=="teachers" and colour==0:
-        next_player=(await guild.fetch_member(state[i][4][colour][0]))
-        next_player_text = next_player.display_name
-        mention_content = next_player.mention
+        next_player_text, mention_content = await get_player_display(guild, state[i][4][colour][0])
     elif state[i][1]=="teachers" and colour==1:
         next_player_text = "Teachers"
         mention_content = None
 
-    file, msg = format_game_message(channel_id, state[i], next_player_display=next_player_text, ping_mention=mention_content, title_override=f"Move Edited: {arg.upper()}")
+    file, msg = format_game_message(game_key, state[i], next_player_display=next_player_text, ping_mention=mention_content, title_override=f"Move Edited: {arg.upper()}")
     await ctx.send(content=msg, file=file)
 
     with open("state.txt", "w") as f: f.write(repr(state))
 
 @bot.command()
 async def board(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
-    user = ctx.author
-    guild= ctx.guild
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
+    guild = ctx.guild
 
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state))  if state[i][0] == channel_id]
-    if not filter_state:
+    idx = find_game(state, ctx)
+    if idx is None:
         await ctx.send("No active game in this channel!")
         return
 
-    i= filter_state[0]
-    colour= sgfengine.next_colour(str(channel_id))
-
-    sgfengine.render_png(str(channel_id))
+    i = idx
+    colour = sgfengine.next_colour(game_key)
+    sgfengine.render_png(game_key)
 
     next_player_text = None
     if state[i][1]=="queue":
         if len(state[i][4][colour]) > 0:
-            next_player=(await guild.fetch_member(state[i][4][colour][0]))
-            next_player_text = next_player.display_name
+            next_player_text, _ = await get_player_display(guild, state[i][4][colour][0])
         else:
             next_player_text = "Waiting for players"
     elif state[i][1]=="teachers":
         if colour==0:
-            next_player=(await guild.fetch_member(state[i][4][colour][0]))
-            next_player_text = next_player.display_name
+            next_player_text, _ = await get_player_display(guild, state[i][4][colour][0])
         else:
             next_player_text = "Teachers"
 
-    file, msg = format_game_message(channel_id, state[i], next_player_display=next_player_text, title_override="Current Board State")
+    file, msg = format_game_message(game_key, state[i], next_player_display=next_player_text, title_override="Current Board State")
     await ctx.send(content=msg, file=file)
 
 @bot.command(name="history", aliases=["moves", "kifu"])
 async def history(ctx, *args):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id = str(ctx.channel.id)
-    if not os.path.exists(f"{channel_id}.sgf"):
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
+    if not os.path.exists(f"{game_key}.sgf"):
         await ctx.send("No game has been created yet in this channel. Use `$newgame` to start!")
         return
 
     move_range = args[0] if args else None
-    hist_png = f"{channel_id}_history.png"
+    hist_png = f"{game_key}_history.png"
 
-    sgfengine.render_png(channel_id, move_numbers=True, move_range=move_range, out_filename=hist_png)
+    sgfengine.render_png(game_key, move_numbers=True, move_range=move_range, out_filename=hist_png)
 
     if not os.path.exists(hist_png):
         await ctx.send("Failed to render history board.")
         return
 
-    info = sgfengine.get_game_state(channel_id)
+    info = sgfengine.get_game_state(game_key)
     total_moves = info.get("move_count", 0)
 
     if move_range:
@@ -461,19 +470,18 @@ async def history(ctx, *args):
 
 @bot.command()
 async def join(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
     user = ctx.author
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state))  if state[i][0] == channel_id]
-    if not filter_state:
+    idx = find_game(state, ctx)
+    if idx is None:
         await ctx.send("No active game in this channel!")
         return
 
-    i= filter_state[0]
+    i = idx
 
     if user.id in (state[i][4][0]+state[i][4][1]):
         await ctx.send("Player already in this game!")
@@ -494,19 +502,18 @@ async def join(ctx):
 
 @bot.command()
 async def leave(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
     user = ctx.author
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state))  if state[i][0] == channel_id]
-    if not filter_state:
+    idx = find_game(state, ctx)
+    if idx is None:
         await ctx.send("No active game in this channel!")
         return
 
-    i= filter_state[0]
+    i = idx
 
     if user.id not in (state[i][4][0]+state[i][4][1]):
         await ctx.send("Player not in this game!")
@@ -525,21 +532,19 @@ async def leave(ctx):
 
 @bot.command()
 async def queue(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
-    channel= bot.get_channel(channel_id) # thonk the order
-    guild = channel.guild
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
+    guild = ctx.guild
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    filter_state= [i for i in range(len(state))  if state[i][0] == channel_id]
-    if not filter_state:
+    idx = find_game(state, ctx)
+    if idx is None:
         await ctx.send("No active game in this channel!")
         return
 
-    i= filter_state[0]
-    colour= sgfengine.next_colour(str(channel_id))
+    i = idx
+    colour = sgfengine.next_colour(game_key)
 
     if state[i][1] in ["random", "anarchy", "debug"]:
         await ctx.send("This game has no queue! No need to join, just `$play` whenever you want :P")
@@ -548,7 +553,7 @@ async def queue(ctx):
     if state[i][1] =="teachers":
         output="Player list for Team Black: "+black_stone+"\n"
         for j, player_id in enumerate(state[i][4][0]):
-            player_name=(await guild.fetch_member(player_id)).display_name
+            player_name, _ = await get_player_display(guild, player_id)
             output+=str(j+1).rjust(3)+". "+ player_name+"\n"
         await ctx.send(output)
         return
@@ -561,7 +566,7 @@ async def queue(ctx):
 
     if state[i][4][0] == []:
         for j, player_id in enumerate(state[i][4][1]):
-            player_name=(await guild.fetch_member(player_id)).display_name
+            player_name, _ = await get_player_display(guild, player_id)
             output+=white_stone+str(j+1).rjust(3)+". "+ player_name+"\n"
         output+="\n Team Black needs more members!"
         await ctx.send(output)
@@ -569,13 +574,12 @@ async def queue(ctx):
 
     if state[i][4][1] == []:
         for j, player_id in enumerate(state[i][4][0]):
-            player_name=(await guild.fetch_member(player_id)).display_name
+            player_name, _ = await get_player_display(guild, player_id)
             output+=black_stone+str(j+1).rjust(3)+". "+ player_name+"\n"
         output+="\n Team White needs more members!"
         await ctx.send(output)
         return
 
-    # Which team has more members? Or in case of a tie, which team goes first?
     if len(state[i][4][colour]) > len(state[i][4][1-colour]):
         last_player = state[i][4][colour][-1]
     else: last_player= state[i][4][1-colour][-1]
@@ -583,11 +587,10 @@ async def queue(ctx):
     j=1
     pointers=[0,0]
     while(True):
-        #print(channel_id, j, pointers, colour, state[i][0], state[i][4])
-        output+= white_stone if ((colour+1) % 2 ==0)  else black_stone
+        output+= white_stone if ((colour+1) % 2 ==0) else black_stone
         output+= str(j).rjust(3)+". "
 
-        player_name= (await guild.fetch_member(state[i][4][colour][pointers[colour]])).display_name
+        player_name, _ = await get_player_display(guild, state[i][4][colour][pointers[colour]])
         output+= player_name+"\n"
 
         if state[i][4][colour][pointers[colour]] == last_player: break
@@ -598,30 +601,34 @@ async def queue(ctx):
         j+=1
 
     if len(state[i][4][0])<min_players:
-        output+="\n Team Black needs more members!"
-
+        output+="\n Team Black needs at least {} members!".format(min_players)
     if len(state[i][4][1])<min_players:
-        output+="\n Team White needs more members!"
+        output+="\n Team White needs at least {} members!".format(min_players)
 
     await ctx.send(output)
 
 @bot.command()
 async def sgf(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    if not os.path.exists(str(ctx.channel.id)+".sgf"):
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
+    if not os.path.exists(f"{game_key}.sgf"):
         await ctx.send("No active game in this channel!")
         return
-    file = discord.File(str(ctx.channel.id)+".sgf")
-    await ctx.send(file=file)
+
+    now = datetime.now()
+    clean_channel = re.sub(r'[^a-zA-Z0-9_\-]', '', ctx.channel.name) or "channel"
+    friendly_filename = f"rengo_{now.strftime('%Y_%m_%d_%H%M%S')}_{clean_channel}.sgf"
+
+    file = discord.File(f"{game_key}.sgf", filename=friendly_filename)
+    await ctx.send(content=f"Current SGF for **#{ctx.channel.name}**:", file=file)
 
 @bot.command()
 async def newgame(ctx, gametype, handicap=0, komi=6.5):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
-    user = ctx.author
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
 
-    if user.id not in admins:
-        await ctx.send("You don't have permissions for this!")
+    if not is_game_admin(ctx):
+        await ctx.send("You don't have permissions for this! Only server administrators or bot admins can start games.")
         return
 
     gametype = gametype.strip().lower()
@@ -629,21 +636,20 @@ async def newgame(ctx, gametype, handicap=0, komi=6.5):
         await ctx.send("Unrecognized game type! Please try `$newgame <queue/random/teachers/anarchy>`")
         return
 
-    # lowest effort serialization
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    if ctx.channel.id in [ ch for (ch,_,_,_,_) in state]:
+    if find_game(state, ctx) is not None:
         await ctx.send("A game is already active in this channel!")
         return
 
-    sgfengine.new_game(str(ctx.channel.id), handicap, komi)
-    if gametype== "teachers":
-        state.append((ctx.channel.id, gametype, [], [], [[],teachers]))
+    sgfengine.new_game(game_key, handicap, komi)
+    if gametype == "teachers":
+        state.append((game_key, gametype, [], [], [[], list(teachers)]))
     else:
-        state.append((ctx.channel.id, gametype, [], [], [[],[]]))
+        state.append((game_key, gametype, [], [], [[], []]))
 
     title = f"New Game Started • {gametype.upper()} Mode"
-    file, msg = format_game_message(channel_id, state[-1], title_override=title)
+    file, msg = format_game_message(game_key, state[-1], title_override=title)
     if gametype in ["queue", "teachers"]:
         msg += "\n*Join the game with `$join`*"
     else:
@@ -654,12 +660,11 @@ async def newgame(ctx, gametype, handicap=0, komi=6.5):
 
 @bot.command()
 async def resign(ctx, arg):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id= ctx.channel.id
-    user = ctx.author
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
 
-    if user.id not in admins:
-        await ctx.send("You don't have permissions for this!")
+    if not is_game_admin(ctx):
+        await ctx.send("You don't have permissions for this! Only server administrators or bot admins can resign games.")
         return
 
     arg = arg.strip().upper()
@@ -672,61 +677,41 @@ async def resign(ctx, arg):
 
     with open("state.txt") as f: state = ast.literal_eval(f.read())
 
-    now=datetime.now()
-    file_name= "rengo_"+now.strftime("%Y_%m_%d_%H_%M_%S_")+ctx.channel.name+".sgf" #remove the hour minute and second later
+    idx = find_game(state, ctx)
+    if idx is None:
+        await ctx.send("No active game in this channel!")
+        return
 
-    sgfengine.resign(str(channel_id), arg, file_name)
+    now = datetime.now()
+    clean_channel = re.sub(r'[^a-zA-Z0-9_\-]', '', ctx.channel.name) or "channel"
+    friendly_filename = f"rengo_{now.strftime('%Y_%m_%d_%H%M%S')}_{clean_channel}.sgf"
+    archived_filename = f"{game_key}_{friendly_filename}"
 
-    file = discord.File(file_name)
+    sgfengine.resign(game_key, arg, archived_filename)
+
+    file = discord.File(archived_filename, filename=friendly_filename)
     await ctx.send(file=file, content=("Black" if arg=="W" else "White")+" wins!")
 
-    state = [s for s in state if s[0]!=channel_id]
-
+    state.pop(idx)
     with open("state.txt", "w") as f: f.write(repr(state))
 
 @bot.command()
 async def shutdown(ctx):
-    if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
-    channel_id = ctx.channel.id
-    user = ctx.author
-
-    if user.id not in admins:
-        await ctx.send("You don't have permissions for this!")
+    if not is_permitted(ctx): return
+    if ctx.author.id not in admins:
+        await ctx.send("Only global bot administrators can shut down the bot!")
         return
 
     await ctx.send("🛑 Shutting down RengoBot gracefully...")
-    print(f"[RengoBot] Shutdown command invoked by {user.display_name} ({user.id})")
+    print(f"[RengoBot] Shutdown command invoked by {ctx.author.display_name} ({ctx.author.id})")
     await bot.close()
 
 async def background_task():
     await bot.wait_until_ready()
     print("Bot ready!")
 
-    guild = discord.utils.get(bot.guilds, name=server_name)
     game = discord.Game("multiplayer Baduk! $help for command list")
     await bot.change_presence(status=discord.Status.online, activity=game)
-
-    try:
-        while not bot.is_closed():
-            try:
-                with open("state.txt") as f: state = ast.literal_eval(f.read())
-
-                channel_id = permitted_channel_ids[0]
-                channel = bot.get_channel(channel_id)
-
-                if os.path.exists(str(channel_id) + ".sgf"):
-                    colour = sgfengine.next_colour(str(channel_id))
-
-                with open("state.txt", "w") as f: f.write(repr(state))
-                await asyncio.sleep(10)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                pass
-    except asyncio.CancelledError:
-        pass
-
 
 async def main():
     if os.path.exists("/data"):

@@ -1,2 +1,3 @@
 sgfmill
-python-discord
+discord.py
+
