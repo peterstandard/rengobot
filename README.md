@@ -25,13 +25,16 @@ Make sure to run the bot in an environment with read/write permissions
 - `$help`: Show command help
 - `$newgame <queue/random/teachers/anarchy> <handicap> <komi>`: Start a new game (Admin only)
 - `$play <move>`: Play a move (e.g. `$play Q16`, `$play q16`, `$play D4`)
+- `$pass`: Pass your turn (two consecutive passes concludes the game)
 - `$edit <move>`: Correct your last move within 5 minutes
 - `$board`: Display current board state
+- `$history [range]`: Display board with move numbers on stones (e.g. `$history`, `$history 20-50`) (aliases: `$moves`, `$kifu`)
 - `$sgf`: Download current game's SGF file
 - `$join`: Join the game in this channel (`queue` / `teachers` modes)
 - `$leave`: Leave the game in this channel
 - `$queue`: View player list and queue order
 - `$resign <B/W>`: Resign the game as Black or White (Admin only)
+- `$shutdown`: Gracefully shut down the bot (Admin only)
 
 ## Configuration & Environment Variables
 Copy `.env.example` to `.env` to configure your credentials and server details without hardcoding them into code:

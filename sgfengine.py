@@ -6,10 +6,57 @@ from sgfmill import sgf, boards, sgf_moves, ascii_boards
 if "PATH" in os.environ and os.path.expanduser("~/.cargo/bin") not in os.environ["PATH"]:
     os.environ["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + os.environ.get("PATH", "")
 
+import subprocess
+import re
+
 # This file only deals with the png and sgf side of things. To manage users etc go to the main file.
 
-def render_png(channel_id):
-    os.system(f"sgf-render -f png --style fancy --label-sides nesw -o {channel_id}.png -n last {channel_id}.sgf")
+def render_png(channel_id, move_numbers=False, move_range=None, out_filename=None):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    style_path = os.path.join(base_dir, "board_style.toml")
+    style_arg = f"--custom-style {style_path}" if os.path.exists(style_path) else "--style fancy"
+    sgf_path = f"{channel_id}.sgf"
+    png_path = out_filename if out_filename else f"{channel_id}.png"
+    svg_path = f"{channel_id}_temp.svg"
+
+    move_num_arg = ""
+    if move_numbers:
+        if move_range:
+            move_num_arg = f"--move-numbers={move_range}"
+        else:
+            move_num_arg = "--move-numbers"
+
+    try:
+        cmd = f"sgf-render -f svg {style_arg} --label-sides sw {move_num_arg} -n last {sgf_path}"
+        proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.returncode == 0 and proc.stdout:
+            svg_data = proc.stdout
+
+            svg_data = svg_data.replace('font-family="Inter"', 'font-family="Noto Sans, sans-serif"')
+            svg_data = svg_data.replace('font-size="0.45"', 'font-size="0.70"')
+
+            # Only replace coordinates in board-labels (protect move numbers on stones)
+            if 'id="board-labels"' in svg_data:
+                parts = svg_data.split('id="board-labels"', 1)
+                labels_part = parts[1]
+                labels_part = labels_part.replace('fill="#000000"', 'fill="#6e5b4c"', 1)
+                for target in ['>D<', '>K<', '>Q<', '>4<', '>10<', '>16<']:
+                    labels_part = labels_part.replace(target, target.replace('>', ' fill="#000000" font-weight="900">'))
+                svg_data = parts[0] + 'id="board-labels"' + labels_part
+
+            with open(svg_path, "w") as f:
+                f.write(svg_data)
+
+            resvg_cmd = f"resvg {svg_path} {png_path}"
+            resvg_proc = subprocess.run(resvg_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if os.path.exists(svg_path):
+                os.remove(svg_path)
+            if resvg_proc.returncode == 0 and os.path.exists(png_path):
+                return
+    except Exception:
+        pass
+
+    os.system(f"sgf-render -f png {style_arg} --label-sides sw {move_num_arg} -o {png_path} -n last {sgf_path}")
 
 def new_game(channel_id, handicap=0, komi=6.5):
     game = sgf.Sgf_game(19)
@@ -53,7 +100,10 @@ def get_last_move_formatted(channel_id):
             return None
         for col_prop in ("B", "W"):
             if node.has_property(col_prop):
-                row, col = node.get(col_prop)
+                move_val = node.get(col_prop)
+                if move_val is None:
+                    return "Pass"
+                row, col = move_val
                 col_letter = chr(col + ord('A') + (1 if col >= 8 else 0))
                 row_number = str(row + 1)
                 return f"{col_letter}{row_number}"
@@ -61,7 +111,71 @@ def get_last_move_formatted(channel_id):
         pass
     return None
 
-# Could be an illegal move, or maybe I don't understand the message
+def get_game_state(channel_id):
+    filename = str(channel_id) + ".sgf"
+    if not os.path.exists(filename):
+        return None
+    with open(filename, "rb") as f:
+        game = sgf.Sgf_game.from_bytes(f.read())
+
+    board, moves = sgf_moves.get_setup_and_moves(game)
+
+    black_captures = 0
+    white_captures = 0
+    consecutive_passes = 0
+    last_move_str = None
+
+    replay_board = boards.Board(19)
+    if game.root.has_property("AB"):
+        for (r, c) in game.root.get("AB"):
+            replay_board.play(r, c, 'b')
+
+    for (colour, move) in moves:
+        if move is None:
+            consecutive_passes += 1
+            last_move_str = "Pass"
+        else:
+            consecutive_passes = 0
+            row, col = move
+            opp_colour = 'w' if colour == 'b' else 'b'
+            opp_before = sum(1 for r in range(19) for c in range(19) if replay_board.get(r, c) == opp_colour)
+            replay_board.play(row, col, colour)
+            opp_after = sum(1 for r in range(19) for c in range(19) if replay_board.get(r, c) == opp_colour)
+            captured = opp_before - opp_after
+            if colour == 'b':
+                black_captures += captured
+            else:
+                white_captures += captured
+            col_letter = chr(col + ord('A') + (1 if col >= 8 else 0))
+            last_move_str = f"{col_letter}{row + 1}"
+
+    last_node = game.get_last_node()
+    last_player = last_node.get("C") if last_node.has_property("C") else None
+
+    last_colour = None
+    if last_node.has_property("B"):
+        last_colour = "B"
+    elif last_node.has_property("W"):
+        last_colour = "W"
+
+    next_col = 1 if (last_colour == "B" or (last_node == game.root and game.root.has_property("AB"))) else 0
+    next_colour_str = "W" if next_col == 1 else "B"
+
+    handicap = game.root.get("HA") if game.root.has_property("HA") else 0
+    komi = game.root.get("KM") if game.root.has_property("KM") else 6.5
+
+    return {
+        "move_count": len(moves),
+        "last_move": last_move_str,
+        "last_player": last_player,
+        "last_colour": last_colour,
+        "next_colour": next_colour_str,
+        "captures": {"B": black_captures, "W": white_captures},
+        "consecutive_passes": consecutive_passes,
+        "handicap": handicap,
+        "komi": komi
+    }
+
 # outputs to <channel_id>.png
 def play_move(channel_id, messagestr, player, overwrite=False):
 
@@ -82,7 +196,8 @@ def play_move(channel_id, messagestr, player, overwrite=False):
         moves = moves[:-1]
 
     for (colour, (row, col)) in moves:
-        koban = board.play(row, col, colour)
+        if (row, col) is not None:
+            koban = board.play(row, col, colour)
 
     if (therow, thecol) == koban:
         raise ValueError("Ko banned move!")
@@ -103,6 +218,24 @@ def play_move(channel_id, messagestr, player, overwrite=False):
     if koban2 is not None: node2.set("SQ", [koban2])
     node2.set("CR", [(therow, thecol)])
     node2.set("C", player) # I think this would be fun for the review
+    if node.has_property("CR"): node.unset("CR")
+    if node.has_property("SQ"): node.unset("SQ")
+
+    with open(str(channel_id) + ".sgf", "wb") as f:
+        f.write(game.serialise())
+
+    render_png(channel_id)
+
+def play_pass(channel_id, player):
+    with open(str(channel_id) + ".sgf", "rb") as f:
+        game = sgf.Sgf_game.from_bytes(f.read())
+
+    node = game.get_last_node()
+    colour = "w" if ("B" in node.properties() or "AB" in node.properties()) else "b"
+
+    node2 = node.new_child()
+    node2.set(("B" if colour == 'b' else "W"), None)
+    node2.set("C", player)
     if node.has_property("CR"): node.unset("CR")
     if node.has_property("SQ"): node.unset("SQ")
 

@@ -1,0 +1,25 @@
+line_color = "#1f140a"
+line_width = 0.035
+hoshi_radius = 0.1
+background_fill = "#dcb588"
+label_color = "#000000"
+black_stone_fill = "url(#black-stone-fill)"
+white_stone_fill = "url(#white-stone-fill)"
+black_stone_stroke = "#000000"
+white_stone_stroke = "#777777"
+markup_stroke_width = 0.12
+black_stone_markup_color = "#ffffff"
+white_stone_markup_color = "#000000"
+empty_markup_color = "#000000"
+black_stone_selected_color = "#0055ff"
+white_stone_selected_color = "#0055ff"
+empty_selected_color = "#0055ff"
+defs = """<radialGradient cx="35%" cy="35%" id="black-stone-fill">
+<stop offset="0%" stop-color="#555"/>
+<stop offset="100%" stop-color="#000"/>
+</radialGradient>
+<radialGradient cx="35%" cy="35%" id="white-stone-fill">
+<stop offset="0%" stop-color="#ffffff"/>
+<stop offset="30%" stop-color="#eeeeee"/>
+<stop offset="100%" stop-color="#bbbbbb"/>
+</radialGradient>"""

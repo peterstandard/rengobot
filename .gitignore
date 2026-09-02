@@ -9,3 +9,4 @@ token.txt
 *.sh
 __pycache__/
 rengobot_venv/
+venv/
