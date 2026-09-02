@@ -34,7 +34,10 @@ Make sure to run the bot in an environment with read/write permissions
 - `$leave`: Leave the game in this channel
 - `$queue`: View player list and queue order
 - `$resign <B/W>`: Resign the game as Black or White (Admin only)
-- `$shutdown`: Gracefully shut down the bot (Admin only)
+- `$channels`: Show active game channels on this server
+- `$listen`: Enable Rengo in this channel (Admin only)
+- `$unlisten`: Disable Rengo in this channel (Admin only)
+- `$shutdown`: Gracefully shut down the bot container (Global admin only)
 
 ## Configuration & Environment Variables
 Copy `.env.example` to `.env` to configure your credentials and server details without hardcoding them into code:

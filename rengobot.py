@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import json
 import os
 os.environ["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + os.environ.get("PATH", "")
 import re
@@ -14,6 +15,8 @@ import sgfengine
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='$', intents=intents, help_command=None, case_insensitive=True)
+
+CHANNELS_FILE = "channels.json"
 
 def load_env(env_path=".env"):
     if os.path.exists(env_path):
@@ -62,14 +65,35 @@ if not token:
 
 format = "%Y_%m_%d_%H_%M_%S_%f"
 
+def load_channels():
+    if os.path.exists(CHANNELS_FILE):
+        try:
+            with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[RengoBot] Error loading {CHANNELS_FILE}: {e}")
+    return {}
+
+def save_channels(data):
+    try:
+        with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[RengoBot] Error saving {CHANNELS_FILE}: {e}")
+
+def is_channel_enabled(guild_id, channel_id):
+    if channel_id in permitted_channel_ids:
+        return True
+    data = load_channels()
+    guild_channels = data.get(str(guild_id), [])
+    return channel_id in guild_channels
+
 def is_permitted(ctx):
     if not ctx.guild:
         return False
     if permitted_server_ids and ctx.guild.id not in permitted_server_ids:
         return False
-    if permitted_channel_ids and ctx.channel.id not in permitted_channel_ids:
-        return False
-    return True
+    return is_channel_enabled(ctx.guild.id, ctx.channel.id)
 
 def is_game_admin(ctx):
     if ctx.author.id in admins:
@@ -152,11 +176,87 @@ def format_game_message(game_key, state_tuple=None, next_player_display=None, pi
     file = discord.File(f"{game_key}.png")
     return file, "\n".join(lines)
 
+@bot.command(name="listen")
+async def listen_channel(ctx):
+    if not ctx.guild:
+        return
+    if not is_game_admin(ctx):
+        await ctx.send("You don't have permissions for this! Only server administrators can configure bot channels.")
+        return
+
+    data = load_channels()
+    g_key = str(ctx.guild.id)
+    ch_list = data.get(g_key, [])
+    if ctx.channel.id in ch_list or ctx.channel.id in permitted_channel_ids:
+        await ctx.send(f"ℹ️ RengoBot is already listening in {ctx.channel.mention}!")
+        return
+
+    ch_list.append(ctx.channel.id)
+    data[g_key] = ch_list
+    save_channels(data)
+    await ctx.send(f"✅ RengoBot is now listening in {ctx.channel.mention}! Use `$newgame` to start a game.")
+
+@bot.command(name="unlisten")
+async def unlisten_channel(ctx):
+    if not ctx.guild:
+        return
+    if not is_game_admin(ctx):
+        await ctx.send("You don't have permissions for this! Only server administrators can configure bot channels.")
+        return
+
+    data = load_channels()
+    g_key = str(ctx.guild.id)
+    ch_list = data.get(g_key, [])
+
+    if ctx.channel.id not in ch_list and ctx.channel.id not in permitted_channel_ids:
+        await ctx.send(f"ℹ️ RengoBot is not listening in {ctx.channel.mention}.")
+        return
+
+    if ctx.channel.id in ch_list:
+        ch_list.remove(ctx.channel.id)
+        data[g_key] = ch_list
+        save_channels(data)
+
+    msg = f"🔇 RengoBot will no longer listen in {ctx.channel.mention}."
+    game_key = get_game_key(ctx)
+    if os.path.exists(f"{game_key}.sgf"):
+        msg += " Active game data is preserved and can be resumed at any time with `$listen`."
+    await ctx.send(msg)
+
+@bot.command(name="channels")
+async def list_channels(ctx):
+    if not ctx.guild:
+        return
+
+    data = load_channels()
+    g_key = str(ctx.guild.id)
+    ch_set = set(data.get(g_key, []))
+
+    for cid in permitted_channel_ids:
+        if ctx.guild.get_channel(cid):
+            ch_set.add(cid)
+
+    if not ch_set:
+        await ctx.send("No channels are currently enabled for RengoBot in this server.\nAn administrator can enable this channel by typing `$listen`!")
+        return
+
+    mentions = [f"<#{cid}>" for cid in sorted(ch_set)]
+    await ctx.send(f"**Active Rengo Channels in {ctx.guild.name}:**\n" + "\n".join(f"• {m}" for m in mentions))
+
 @bot.command()
 async def help(ctx):
-    if not is_permitted(ctx): return
+    if not ctx.guild:
+        return
+    if not is_permitted(ctx):
+        if is_game_admin(ctx):
+            await ctx.send(
+                f"ℹ️ RengoBot is not currently active in this channel.\n"
+                f"Type `$listen` to enable games here, or `$channels` to view active channels."
+            )
+        return
+
     await ctx.send(
-        "**Commands:**\n"
+        "**Game Commands:**\n"
         "`$help`: shows this help\n"
         "`$join`: join the game in this channel (`queue`/`teachers`)\n"
         "`$leave`: leave the game in this channel\n"
@@ -166,12 +266,16 @@ async def help(ctx):
         "`$board`: shows the current board\n"
         "`$history [range]`: shows board with move numbers on stones\n"
         "`$queue`: shows player queue / turn order\n"
-        "`$sgf`: get the SGF file of the current game\n"
-        "`$newgame <mode> <handicap> <komi>`: starts a game (admin only)\n"
-        "`$resign <B/W>`: resigns the game and returns final SGF (admin only)\n"
-        "`$shutdown`: cleanly shuts down the bot (global admin only)\n\n"
+        "`$sgf`: download the SGF file of the current game\n"
+        "`$channels`: show active Rengo channels on this server\n\n"
+        "**Admin Commands:**\n"
+        "`$listen`: enable Rengo games in this channel\n"
+        "`$unlisten`: disable Rengo games in this channel\n"
+        "`$newgame <mode> <handicap> <komi>`: start a new game\n"
+        "`$resign <B/W>`: resign the game and record final SGF\n"
+        "`$shutdown`: cleanly shut down the bot container (global admin only)\n\n"
         "**Game Modes:**\n"
-        "• `random`: Open to all! No queue; players alternate moves with consecutive-play limits.\n"
+        "• `random`: Open to all! No queue; players alternate moves with cooldown limits.\n"
         "• `anarchy`: Open to all! No queue and no consecutive-play or color limits.\n"
         "• `queue`: Team rengo with balanced Black/White queues and strict turn rotation.\n"
         "• `teachers`: Students join Team Black in a queue; teachers play White freely."
