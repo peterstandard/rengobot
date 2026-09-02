@@ -38,11 +38,22 @@ def render_png(channel_id, move_numbers=False, move_range=None, out_filename=Non
             # Only replace coordinates in board-labels (protect move numbers on stones)
             if 'id="board-labels"' in svg_data:
                 parts = svg_data.split('id="board-labels"', 1)
-                labels_part = parts[1]
-                labels_part = labels_part.replace('fill="#000000"', 'fill="#6e5b4c"', 1)
+                before = parts[0]
+                after = parts[1]
+
+                # Ensure base label color is dark gray (#555555) on the board-labels group
+                last_g = before.rfind('<g')
+                if last_g != -1 and 'fill=' in before[last_g:]:
+                    before = before[:last_g] + re.sub(r'fill="[^"]*"', 'fill="#555555"', before[last_g:], count=1)
+                elif 'fill=' in after[:after.find('>')]:
+                    tag_end = after.find('>')
+                    after = re.sub(r'fill="[^"]*"', 'fill="#555555"', after[:tag_end], count=1) + after[tag_end:]
+
+                # Highlight special star point coordinates in solid black #000000
                 for target in ['>D<', '>K<', '>Q<', '>4<', '>10<', '>16<']:
-                    labels_part = labels_part.replace(target, target.replace('>', ' fill="#000000" font-weight="900">'))
-                svg_data = parts[0] + 'id="board-labels"' + labels_part
+                    after = after.replace(target, target.replace('>', ' fill="#000000" font-weight="900">'))
+
+                svg_data = before + 'id="board-labels"' + after
 
             with open(svg_path, "w") as f:
                 f.write(svg_data)
