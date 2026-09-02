@@ -48,14 +48,32 @@ TEACHER_IDS=user_id_1,user_id_2
 ```
 Alternatively, tokens can still be placed in `token.txt` (which is gitignored).
 
-## To run this project locally:
-* Install dependencies: `pip install -r requirements.txt`
-* Ensure `state.txt` exists and contains `[]`
-* Set up your `.env` (or `token.txt`)
-* Run `python rengobot.py` to start the bot!
+## Deploying with Docker (Recommended for VPS)
 
-##Deploying
-We are currently using fly.io with a Docker image. Once you build your Docker image, you can use your image name in the `fly.toml` file
-![image](https://github.com/katie-oh/rengobot/assets/56092878/281e7851-362e-47f3-90b1-9a8e58ca31a8)
+1. Clone the repository on your server:
+   ```bash
+   git clone https://github.com/peterstandard/rengobot.git
+   cd rengobot/rengobot
+   ```
+2. Create your `.env` configuration:
+   ```bash
+   cp .env.example .env
+   nano .env  # Add your DISCORD_TOKEN, SERVER_ID, etc.
+   ```
+3. Start the bot with Docker Compose:
+   ```bash
+   docker compose up -d --build
+   ```
+4. Useful commands:
+   - **View live logs:** `docker compose logs -f`
+   - **Restart bot:** `docker compose restart`
+   - **Stop bot:** `docker compose down`
+   - **Update to latest code:** `git pull && docker compose up -d --build`
 
-Make sure that in your fly.io configuration, that there is no scaling and that the maximum number of instances is 1! 
+All active game states and `.sgf` records persist in the `./data` directory on the host.
+
+## To run locally without Docker:
+* Install Rust dependencies: `cargo install sgf-render resvg`
+* Install Python dependencies: `pip install -r requirements.txt`
+* Set up your `.env` file
+* Run `python rengobot.py` to start the bot! 

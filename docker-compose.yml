@@ -1,0 +1,9 @@
+services:
+  rengobot:
+    build: .
+    container_name: rengobot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data

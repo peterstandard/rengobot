@@ -731,6 +731,9 @@ async def background_task():
 async def main():
     if os.path.exists("/data"):
         os.chdir("/data")
+    if not os.path.exists("state.txt"):
+        with open("state.txt", "w") as f:
+            f.write("[]")
     bg_task = None
     try:
         async with bot:

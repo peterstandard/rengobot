@@ -10,3 +10,4 @@ token.txt
 __pycache__/
 rengobot_venv/
 venv/
+data/
