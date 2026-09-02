@@ -1,6 +1,8 @@
 # *.txt
 state.txt
 token.txt
+.env
+.env*.local
 *.sgf
 *.png
 *.out

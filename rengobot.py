@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import os
+os.environ["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + os.environ.get("PATH", "")
 import time
 from datetime import datetime, timedelta
 
@@ -26,7 +27,27 @@ intents = discord.Intents.default()
 intents.message_content = True
 # client = discord.Client(intents=intents)
 # bot = commands.Bot(command_prefix='$', intents=intents)
-bot = commands.Bot(command_prefix='$', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='$', intents=intents, help_command=None, case_insensitive=True)
+
+def load_env(env_path=".env"):
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip("'\"")
+                    if key not in os.environ:
+                        os.environ[key] = val
+
+load_env()
+
+def get_int_list(env_var, default=None):
+    val = os.environ.get(env_var)
+    if val is not None:
+        return [int(x.strip()) for x in val.split(",") if x.strip().isdigit()]
+    return default if default is not None else []
 
 min_time_player= timedelta(seconds=1) # in random games, min time between same player plays (default days=1)
 time_to_skip= timedelta(seconds=1) # in queue games, how much time to wait for the next move
@@ -34,34 +55,26 @@ min_players = 2
 
 # People who can start and resign games :O
 # Later we might replace this with checking for a role.
-admins=[ 463380651467472896, # Devin
-         907684282145849375, # David
-         631824578934734848, # Katie
-         489423695102869535  # Tim
-        ]
+admins = get_int_list("ADMIN_IDS", [463380651467472896, 907684282145849375, 631824578934734848, 489423695102869535])
 
-teachers=[ 463380651467472896, # Devin
-         907684282145849375, # David
-         631824578934734848, # Katie
-         489423695102869535  # Tim
-        ]
+teachers = get_int_list("TEACHER_IDS", [463380651467472896, 907684282145849375, 631824578934734848, 489423695102869535])
 
-server_id= 1060261462733496320 # Columbus Go Club
-# server_id= 1115830515396792342 # Katie's test server
-# server_id = 1132772102504726708 # Tim's test server
+server_id = int(os.environ.get("SERVER_ID", 1060261462733496320))
 
-server_name = "Columbus Go Club"
-# server_name = "Tim's Server"
+server_name = os.environ.get("SERVER_NAME", "Columbus Go Club")
 
-permitted_channel_ids= [ 1115612796734943374 ] # zen-go channel
-# permitted_channel_ids= [ 1115830516046893109 ] # Katie's test channel
-# permitted_channel_ids = [ 1132772102504726710 ] # Tim's test channel
+permitted_channel_ids = get_int_list("PERMITTED_CHANNEL_IDS", [1115612796734943374])
 
 white_stone= "<:white_stone:882731089548939314>"
 black_stone= "<:black_stone:882730888453046342>"
 
-with open("token.txt") as f:
-    token = f.readlines()[0].strip() # Get your own token and put it in token.txt
+token = os.environ.get("DISCORD_TOKEN")
+if not token:
+    if os.path.exists("token.txt"):
+        with open("token.txt") as f:
+            token = f.read().strip()
+    else:
+        raise ValueError("Discord token not found! Provide DISCORD_TOKEN in .env or token.txt")
 
 format="%Y_%m_%d_%H_%M_%S_%f"
 
@@ -75,21 +88,23 @@ async def blah(ctx):
 async def help(ctx):
     if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
     await ctx.send(
-            '$help : shows this help\n\n'+
-
-            '$join : join the game in this channel\n'+
-            '$leave: leave the game in this channel\n'+
-            '$play <move>: play a move. For example, `$play Q16`. Passing is not implemented!\n'+
-            '$edit <move>: if you make a mistake in your move, you have 5 minutes to correct it with this command\n\n'+
-
-            '$sgf: get the sgf file of the game\n'+
-            '$board: shows the current board\n'+
-            '$queue: get the queue of players\n\n'+
-
-            '$newgame <queue/random/teachers> <handicap> <komi>: starts a game in this channel (admin only!)\n'+
-            '$resign <B/W>: <B/W> resigns the game in this channel. It returns its sgf file (admin only!)'
-            )
-    # ctx has guild, message, author, send, and channel (?)
+        "**Commands:**\n"
+        "`$help`: shows this help\n"
+        "`$join`: join the game in this channel (`queue`/`teachers`)\n"
+        "`$leave`: leave the game in this channel\n"
+        "`$play <move>`: play a move (e.g. `$play Q16`)\n"
+        "`$edit <move>`: correct your mistake within 5 minutes\n"
+        "`$board`: shows the current board\n"
+        "`$queue`: shows player queue / turn order\n"
+        "`$sgf`: get the SGF file of the current game\n"
+        "`$newgame <mode> <handicap> <komi>`: starts a game (admin only)\n"
+        "`$resign <B/W>`: resigns the game and returns final SGF (admin only)\n\n"
+        "**Game Modes:**\n"
+        "• `random`: Open to all! No queue; players alternate moves with consecutive-play limits.\n"
+        "• `anarchy`: Open to all! No queue and no consecutive-play or color limits.\n"
+        "• `queue`: Team rengo with balanced Black/White queues and strict turn rotation.\n"
+        "• `teachers`: Students join Team Black in a queue; teachers play White freely."
+    )
 
 @bot.command()
 async def play(ctx, arg):
@@ -140,9 +155,10 @@ async def play(ctx, arg):
                 return
 
 
-    if state[i][3] != [] and datetime.now()-datetime.strptime(state[i][3][-1],format)<timedelta(seconds=4):
+    if state[i][1] != "debug" and state[i][3] != [] and datetime.now()-datetime.strptime(state[i][3][-1],format)<timedelta(seconds=4):
         return #silent error
 
+    arg = arg.strip()
     legal_moves=[chr(col+ord('A')-1)+str(row) for col in range(1,21) if col!=9 for row in range(1,20)]
     legal_moves+=[chr(col+ord('a')-1)+str(row) for col in range(1,21) if col!=9 for row in range(1,20)]
     if arg not in legal_moves:
@@ -203,10 +219,11 @@ async def edit(ctx, arg): #literally play but with less things
     i= filter_state[0]
     colour= sgfengine.next_colour(str(channel_id))
 
-    if len(state[i][2])==0 or state[i][2][-1] != user.id or datetime.now()-datetime.strptime(state[i][3][-1],format) > timedelta(minutes=5):
+    if len(state[i][2])==0 or (state[i][1] != "debug" and (state[i][2][-1] != user.id or datetime.now()-datetime.strptime(state[i][3][-1],format) > timedelta(minutes=5))):
         await ctx.send("You cannot edit this move!")
         return
 
+    arg = arg.strip()
     legal_moves=[chr(col+ord('A')-1)+str(row) for col in range(1,21) if col!=9 for row in range(1,20)]
     legal_moves+=[chr(col+ord('a')-1)+str(row) for col in range(1,21) if col!=9 for row in range(1,20)]
     if arg not in legal_moves:
@@ -250,7 +267,7 @@ async def board(ctx):
     i= filter_state[0]
     colour= sgfengine.next_colour(str(channel_id))
 
-    os.system("sgf-render --style fancy --label-sides nesw -o "+str(channel_id)+".png -n last "+str(channel_id)+".sgf")
+    sgfengine.render_png(str(channel_id))
 
     file = discord.File(str(ctx.channel.id)+".png")
     if state[i][1]=="queue":
@@ -288,7 +305,7 @@ async def join(ctx):
         await ctx.send("Player already in this game!")
         return
 
-    if state[i][1] == "random":
+    if state[i][1] in ["random", "anarchy", "debug"]:
         await ctx.send("This game has no queue! No need to join, just `$play` whenever you want :P")
         return
 
@@ -321,7 +338,7 @@ async def leave(ctx):
         await ctx.send("Player not in this game!")
         return
 
-    if state[i][1] == "random":
+    if state[i][1] in ["random", "anarchy", "debug"]:
         await ctx.send("This game has no queue! No need to leave!")
         return
 
@@ -350,7 +367,7 @@ async def queue(ctx):
     i= filter_state[0]
     colour= sgfengine.next_colour(str(channel_id))
 
-    if state[i][1] == "random":
+    if state[i][1] in ["random", "anarchy", "debug"]:
         await ctx.send("This game has no queue! No need to join, just `$play` whenever you want :P")
         return
 
@@ -417,6 +434,9 @@ async def queue(ctx):
 @bot.command()
 async def sgf(ctx):
     if ctx.guild.id == server_id and ctx.channel.id not in permitted_channel_ids: return
+    if not os.path.exists(str(ctx.channel.id)+".sgf"):
+        await ctx.send("No active game in this channel!")
+        return
     file = discord.File(str(ctx.channel.id)+".sgf")
     await ctx.send(file=file)
 
@@ -430,8 +450,9 @@ async def newgame(ctx, gametype, handicap=0, komi=6.5):
         await ctx.send("You don't have permissions for this!")
         return
 
-    if gametype not in ["queue", "random", "teachers"]:
-        await ctx.send("Unrecognized game type! Please try `$newgame <queue/random/teachers>")
+    gametype = gametype.strip().lower()
+    if gametype not in ["queue", "random", "teachers", "anarchy", "debug"]:
+        await ctx.send("Unrecognized game type! Please try `$newgame <queue/random/teachers/anarchy>`")
         return
 
     # lowest effort serialization
@@ -450,6 +471,10 @@ async def newgame(ctx, gametype, handicap=0, komi=6.5):
     file = discord.File(str(ctx.channel.id)+".png")
     if gametype in ["queue", "teachers"]:
         await ctx.send(file=file, content="A new game has started! Join with `$join`")
+    elif gametype == "debug":
+        await ctx.send(file=file, content="A new DEBUG game has started! Play with `$play <move>`")
+    elif gametype == "anarchy":
+        await ctx.send(file=file, content="A new ANARCHY game has started! Play with `$play <move>`")
     else:
         await ctx.send(file=file, content="A new game has started! Play with `$play <move>`")
 
@@ -464,6 +489,10 @@ async def resign(ctx, arg):
     if user.id not in admins:
         await ctx.send("You don't have permissions for this!")
         return
+
+    arg = arg.strip().upper()
+    if arg in ["BLACK"]: arg = "B"
+    if arg in ["WHITE"]: arg = "W"
 
     if arg not in ["W","B"]:
         await ctx.send("Unrecognized colour! Please try `$resign <B/W>` to resign as Black/White")
@@ -530,33 +559,19 @@ async def background_task():
             channel_id=permitted_channel_ids[0]
             channel= bot.get_channel(channel_id)
 
-            colour = sgfengine.next_colour(str(channel_id))
-            # if state[i][1]=="teachers" and colour=="1": continue #Ask the teachers if they want a ping
-
-            # last_time= datetime.strptime(state[i][3][-1],format)
-            # time_left= last_time + time_to_skip-datetime.now()
-
-            # if time_left < time_to_skip/3.0 and time_left > time_to_skip/3.0-timedelta(seconds=10): # Probably remove? Depends on how passive aggressive it is
-            #     next_user = await guild.fetch_member(state[i][4][colour][0])
-            #     await channel.send("{}'s turn! Time is running up!".format(next_user.mention))#, time_left.total_seconds()/3600) )
-            # if time_left < timedelta():
-            #     state[i][3][-1]= datetime.strftime(datetime.now(),format)
-            #     state[i][2][-1]= None
-            #     user_id= state[i][4][colour][0]
-            #     state[i][4][colour].pop(0)
-            #     state[i][4][colour].append(user_id)
-            #     next_player=(await guild.fetch_member(state[i][4][colour][0]))
-            #     await channel.send(content="{}'s turn! ⭐".format(next_player.mention))
+            if os.path.exists(str(channel_id) + ".sgf"):
+                colour = sgfengine.next_colour(str(channel_id))
 
             with open("state.txt", "w") as f: f.write(repr(state))
             await asyncio.sleep(10)
 
-        except ConnectionResetError:
-            print("Connection error")
+        except Exception as e:
+            pass
 
 
 async def main():
-    os.chdir("/data")
+    if os.path.exists("/data"):
+        os.chdir("/data")
     async with bot:
         bot.loop.create_task(background_task())
         await bot.start(token)
