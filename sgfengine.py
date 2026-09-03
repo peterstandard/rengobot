@@ -182,8 +182,54 @@ def get_game_state(channel_id):
         "ruleset": ruleset
     }
 
+def validate_move(channel_id, messagestr):
+    if messagestr.strip().upper() == "PASS":
+        return True, None
+    messagestr = messagestr.strip()
+    try:
+        thecol = ord(messagestr[0].lower()) - ord('a')
+        if thecol > 8: thecol -= 1
+        therow = int(messagestr[1:]) - 1
+    except Exception:
+        return False, "I don't understand the move! Please use format like Q16 or Pass."
+
+    if not (0 <= thecol < 19 and 0 <= therow < 19):
+        return False, "Move coordinate is out of bounds!"
+
+    filename = str(channel_id) + ".sgf"
+    if not os.path.exists(filename):
+        return False, "No active game in this channel!"
+
+    with open(filename, "rb") as f:
+        game = sgf.Sgf_game.from_bytes(f.read())
+
+    koban = None
+    node = game.get_last_node()
+    board, moves = sgf_moves.get_setup_and_moves(game)
+
+    for (colour, (row, col)) in moves:
+        if (row, col) is not None:
+            koban = board.play(row, col, colour)
+
+    if (therow, thecol) == koban:
+        return False, "Ko banned move!"
+
+    colour = "w" if ("B" in node.properties() or "AB" in node.properties()) else "b"
+
+    board2 = board.copy()
+    try:
+        koban2 = board2.play(therow, thecol, colour)
+    except ValueError:
+        return False, "Illegal move! There is a stone there."
+
+    if board2.get(therow, thecol) is None:
+        return False, "Illegal move! No self-captures allowed."
+
+    return True, None
+
 # outputs to <channel_id>.png
 def play_move(channel_id, messagestr, player, overwrite=False):
+
 
     thecol = ord(messagestr[0].lower()) - ord('a')
     if thecol > 8: thecol -= 1 # Go boards don't have an I column!!

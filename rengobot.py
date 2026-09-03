@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 os.environ["PATH"] = os.path.expanduser("~/.cargo/bin") + os.pathsep + os.environ.get("PATH", "")
+import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='$', intents=intents, help_command=None, case_insensitive=True)
 
 CHANNELS_FILE = "channels.json"
+VOTES_FILE = "votes.json"
 
 def load_env(env_path=".env"):
     if os.path.exists(env_path):
@@ -55,7 +57,6 @@ permitted_channel_ids = get_int_list("PERMITTED_CHANNEL_IDS", [])
 white_stone = os.environ.get("WHITE_STONE_EMOJI", "⚪")
 black_stone = os.environ.get("BLACK_STONE_EMOJI", "⚫")
 
-
 token = os.environ.get("DISCORD_TOKEN")
 if not token:
     if os.path.exists("token.txt"):
@@ -81,6 +82,57 @@ def save_channels(data):
             json.dump(data, f, indent=2)
     except Exception as e:
         print(f"[RengoBot] Error saving {CHANNELS_FILE}: {e}")
+
+def load_votes():
+    if os.path.exists(VOTES_FILE):
+        try:
+            with open(VOTES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[RengoBot] Error loading {VOTES_FILE}: {e}")
+    return {}
+
+def save_votes(data):
+    try:
+        with open(VOTES_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[RengoBot] Error saving {VOTES_FILE}: {e}")
+
+def format_vote_summary(vdata):
+    votes = vdata.get("votes", {})
+    deadline_str = vdata.get("deadline")
+    minutes = vdata.get("minutes", 10.0)
+    mins_display = int(minutes) if minutes == int(minutes) else minutes
+
+    if not deadline_str or not votes:
+        return f"🗳️ No votes cast yet for this turn. Timer (`{mins_display}m`) will begin when the first vote is cast with `$play <move>` or `$pass`."
+
+    try:
+        deadline_dt = datetime.fromisoformat(deadline_str)
+        remaining_sec = max(0, int((deadline_dt - datetime.now()).total_seconds()))
+    except Exception:
+        remaining_sec = 0
+
+    mins = remaining_sec // 60
+    secs = remaining_sec % 60
+    time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+
+    tally = {}
+    for mv in votes.values():
+        tally[mv] = tally.get(mv, 0) + 1
+
+    sorted_moves = sorted(tally.items(), key=lambda x: (-x[1], x[0]))
+
+    total_votes = len(votes)
+    lines = [
+        f"⏱️ **Time remaining:** `{time_str}`  •  **Total votes:** `{total_votes}`",
+        "**Current Standings:**"
+    ]
+    for rank, (mv, cnt) in enumerate(sorted_moves, 1):
+        lines.append(f"{rank}. `{mv}` — **{cnt}** vote{'s' if cnt != 1 else ''}")
+
+    return "\n".join(lines)
 
 def is_channel_enabled(guild_id, channel_id):
     if channel_id in permitted_channel_ids:
@@ -109,7 +161,6 @@ def get_game_key(ctx):
         combined = f"{ctx.guild.id}_{channel_id}"
         legacy_sgf = f"{channel_id}.sgf"
         combined_sgf = f"{combined}.sgf"
-        # Auto-migrate legacy files on disk if present
         if os.path.exists(legacy_sgf) and not os.path.exists(combined_sgf):
             try:
                 os.rename(legacy_sgf, combined_sgf)
@@ -178,6 +229,104 @@ def format_game_message(game_key, state_tuple=None, next_player_display=None, pi
     file = discord.File(f"{game_key}.png")
     return file, "\n".join(lines)
 
+async def resolve_vote(game_key, vdata):
+    channel_id = vdata.get("channel_id")
+    channel = bot.get_channel(channel_id)
+    if not channel and channel_id:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            channel = None
+
+    votes = vdata.get("votes", {})
+    if not votes:
+        all_votes = load_votes()
+        if game_key in all_votes:
+            all_votes[game_key]["deadline"] = None
+            save_votes(all_votes)
+        return
+
+    tally = {}
+    for uid, mv in votes.items():
+        tally[mv] = tally.get(mv, 0) + 1
+
+    max_votes = max(tally.values())
+    top_moves = [mv for mv, cnt in tally.items() if cnt == max_votes]
+
+    tied = len(top_moves) > 1
+    winning_move = random.choice(top_moves) if tied else top_moves[0]
+
+    # Reset voting state for next turn
+    all_votes = load_votes()
+    if game_key in all_votes:
+        all_votes[game_key]["deadline"] = None
+        all_votes[game_key]["votes"] = {}
+        save_votes(all_votes)
+
+    state = []
+    if os.path.exists("state.txt"):
+        with open("state.txt") as f:
+            try:
+                state = ast.literal_eval(f.read())
+            except Exception:
+                state = []
+
+    idx = None
+    for i, s in enumerate(state):
+        entry_id = str(s[0])
+        if entry_id == str(game_key):
+            idx = i
+            break
+
+    if idx is None:
+        return
+
+    # Execute winning move
+    try:
+        if winning_move == "Pass":
+            sgfengine.play_pass(game_key, "Vote Decision")
+        else:
+            sgfengine.play_move(game_key, winning_move, "Vote Decision")
+    except Exception as e:
+        if channel:
+            await channel.send(f"⚠️ Error playing winning move `{winning_move}`: {e}")
+        return
+
+    state[idx][2].append(0)
+    state[idx][3].append(datetime.now().strftime(format))
+    with open("state.txt", "w") as f:
+        f.write(repr(state))
+
+    if channel:
+        minutes = vdata.get("minutes", 10.0)
+        mins_display = int(minutes) if minutes == int(minutes) else minutes
+
+        title = f"Move Decided by Vote: {winning_move}"
+        if tied:
+            details = f"🎲 **Tie-breaker!** `{winning_move}` was randomly selected among tied top moves: {', '.join(f'`{m}`' for m in top_moves)} ({max_votes} votes each)."
+        else:
+            details = f"🗳️ `{winning_move}` won the vote with **{max_votes}** vote{'s' if max_votes != 1 else ''}!"
+
+        file, msg = format_game_message(game_key, state[idx], title_override=title)
+        full_msg = f"{details}\n\n{msg}\n*Next turn's {mins_display}m countdown begins when someone votes with `$play <move>` or `$pass`.*"
+        await channel.send(content=full_msg, file=file)
+
+@tasks.loop(seconds=5)
+async def check_vote_timers():
+    all_votes = load_votes()
+    now = datetime.now()
+    for game_key, vdata in list(all_votes.items()):
+        deadline_str = vdata.get("deadline")
+        if not deadline_str:
+            continue
+        try:
+            deadline_dt = datetime.fromisoformat(deadline_str)
+        except Exception:
+            continue
+
+        if now >= deadline_dt:
+            await resolve_vote(game_key, vdata)
+
 @bot.command(name="listen")
 async def listen_channel(ctx):
     if not ctx.guild:
@@ -245,6 +394,29 @@ async def list_channels(ctx):
     mentions = [f"<#{cid}>" for cid in sorted(ch_set)]
     await ctx.send(f"**Active Rengo Channels in {ctx.guild.name}:**\n" + "\n".join(f"• {m}" for m in mentions))
 
+@bot.command(name="votes", aliases=["standings", "tally"])
+async def show_votes(ctx):
+    if not is_permitted(ctx): return
+    game_key = get_game_key(ctx)
+    with open("state.txt") as f: state = ast.literal_eval(f.read())
+    idx = find_game(state, ctx)
+    if idx is None:
+        await ctx.send("No active game in this channel!")
+        return
+
+    if state[idx][1] not in ["vote", "voting"]:
+        await ctx.send("This game is not in Voting mode! Use `$help` to see available game modes.")
+        return
+
+    all_votes = load_votes()
+    vdata = all_votes.get(game_key, {
+        "channel_id": ctx.channel.id,
+        "minutes": 10.0,
+        "deadline": None,
+        "votes": {}
+    })
+    await ctx.send(format_vote_summary(vdata))
+
 @bot.command()
 async def help(ctx):
     if not ctx.guild:
@@ -260,23 +432,25 @@ async def help(ctx):
     await ctx.send(
         "**Game Commands:**\n"
         "`$help`: shows this help\n"
-        "`$join`: join the game in this channel (`queue`/`teachers`)\n"
-        "`$leave`: leave the game in this channel\n"
-        "`$play <move>`: play a move (e.g. `$play Q16`)\n"
-        "`$pass`: pass your turn\n"
-        "`$edit <move>`: correct your mistake within 5 minutes\n"
+        "`$play <move>`: play a move or cast your vote (e.g. `$play Q16`)\n"
+        "`$pass`: pass your turn or vote to pass\n"
+        "`$votes`: view current voting standings and countdown timer (`vote` mode)\n"
         "`$board`: shows the current board\n"
         "`$history [range]`: shows board with move numbers on stones\n"
+        "`$join`: join the game in this channel (`queue`/`teachers`)\n"
+        "`$leave`: leave the game in this channel\n"
         "`$queue`: shows player queue / turn order\n"
+        "`$edit <move>`: correct your mistake within 5 minutes (turn-based modes)\n"
         "`$sgf`: download the SGF file of the current game\n"
         "`$channels`: show active Rengo channels on this server\n\n"
         "**Admin Commands:**\n"
         "`$listen`: enable Rengo games in this channel\n"
         "`$unlisten`: disable Rengo games in this channel\n"
-        "`$newgame <mode> <handicap> <komi>`: start a new game\n"
+        "`$newgame <mode> [options]`: start a new game\n"
         "`$resign <B/W>`: resign the game and record final SGF\n"
         "`$shutdown`: cleanly shut down the bot container (global admin only)\n\n"
         "**Game Modes:**\n"
+        "• `vote <minutes> [handicap] [komi]`: Collective channel voting! Countdown begins on the first vote; most popular move is played (ties broken randomly).\n"
         "• `random`: Open to all! No queue; players alternate moves with cooldown limits.\n"
         "• `anarchy`: Open to all! No queue and no consecutive-play or color limits.\n"
         "• `queue`: Team rengo with balanced Black/White queues and strict turn rotation.\n"
@@ -297,6 +471,45 @@ async def play(ctx, arg):
         return
     i = idx
     state[i] = (game_key, state[i][1], state[i][2], state[i][3], state[i][4])
+
+    # Voting Mode Logic
+    if state[i][1] in ["vote", "voting"]:
+        arg = arg.strip()
+        legal, err = sgfengine.validate_move(game_key, arg)
+        if not legal:
+            await ctx.send(f"⚠️ {err}")
+            return
+
+        move_formatted = arg.upper()
+        all_votes = load_votes()
+        vdata = all_votes.get(game_key, {
+            "channel_id": ctx.channel.id,
+            "minutes": 10.0,
+            "deadline": None,
+            "votes": {}
+        })
+
+        old_vote = vdata.get("votes", {}).get(str(user.id))
+        is_first_vote = (vdata.get("deadline") is None)
+        if is_first_vote:
+            minutes = vdata.get("minutes", 10.0)
+            vdata["deadline"] = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+            vdata["channel_id"] = ctx.channel.id
+
+        if "votes" not in vdata:
+            vdata["votes"] = {}
+        vdata["votes"][str(user.id)] = move_formatted
+        all_votes[game_key] = vdata
+        save_votes(all_votes)
+
+        if old_vote and old_vote != move_formatted:
+            ack = f"🔄 {user.mention} changed vote from `{old_vote}` to **`{move_formatted}`**!"
+        else:
+            ack = f"🗳️ {user.mention} voted for **`{move_formatted}`**!"
+
+        summary = format_vote_summary(vdata)
+        await ctx.send(f"{ack}\n\n{summary}")
+        return
 
     if state[i][1] in ["queue", "teachers"] and user.id not in state[i][4][0]+state[i][4][1]:
         await ctx.send("Player hasn't joined yet! Join us with `$join`")
@@ -393,6 +606,39 @@ async def pass_turn(ctx):
     i = idx
     state[i] = (game_key, state[i][1], state[i][2], state[i][3], state[i][4])
 
+    # Voting Mode Logic for Pass
+    if state[i][1] in ["vote", "voting"]:
+        move_formatted = "Pass"
+        all_votes = load_votes()
+        vdata = all_votes.get(game_key, {
+            "channel_id": ctx.channel.id,
+            "minutes": 10.0,
+            "deadline": None,
+            "votes": {}
+        })
+
+        old_vote = vdata.get("votes", {}).get(str(user.id))
+        is_first_vote = (vdata.get("deadline") is None)
+        if is_first_vote:
+            minutes = vdata.get("minutes", 10.0)
+            vdata["deadline"] = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+            vdata["channel_id"] = ctx.channel.id
+
+        if "votes" not in vdata:
+            vdata["votes"] = {}
+        vdata["votes"][str(user.id)] = move_formatted
+        all_votes[game_key] = vdata
+        save_votes(all_votes)
+
+        if old_vote and old_vote != move_formatted:
+            ack = f"🔄 {user.mention} changed vote from `{old_vote}` to **`Pass`**!"
+        else:
+            ack = f"🗳️ {user.mention} voted to **`Pass`**!"
+
+        summary = format_vote_summary(vdata)
+        await ctx.send(f"{ack}\n\n{summary}")
+        return
+
     if state[i][1] in ["queue", "teachers"] and user.id not in state[i][4][0]+state[i][4][1]:
         await ctx.send("Player hasn't joined yet! Join us with `$join`")
         return
@@ -475,6 +721,10 @@ async def edit(ctx, arg):
         return
 
     i = idx
+    if state[i][1] in ["vote", "voting"]:
+        await ctx.send("Moves in Voting mode cannot be edited once resolved. You can change your active vote with `$play <move>` or `$pass` before the voting timer ends!")
+        return
+
     colour = sgfengine.next_colour(game_key)
 
     if len(state[i][2])==0 or (state[i][1] != "debug" and (state[i][2][-1] != user.id or datetime.now()-datetime.strptime(state[i][3][-1],format) > timedelta(minutes=5))):
@@ -537,8 +787,22 @@ async def board(ctx):
             next_player_text, _ = await get_player_display(guild, state[i][4][colour][0])
         else:
             next_player_text = "Teachers"
+    elif state[i][1] in ["vote", "voting"]:
+        all_votes = load_votes()
+        vdata = all_votes.get(game_key, {})
+        mins = vdata.get("minutes", 10.0)
+        mins_str = f"{int(mins) if mins == int(mins) else mins}m"
+        if vdata.get("deadline"):
+            next_player_text = f"Channel Vote in progress ({mins_str} timer)"
+        else:
+            next_player_text = f"Channel Vote (awaiting first vote for {mins_str} timer)"
 
     file, msg = format_game_message(game_key, state[i], next_player_display=next_player_text, title_override="Current Board State")
+    if state[i][1] in ["vote", "voting"]:
+        all_votes = load_votes()
+        vdata = all_votes.get(game_key, {})
+        if vdata.get("votes"):
+            msg += f"\n\n{format_vote_summary(vdata)}"
     await ctx.send(content=msg, file=file)
 
 @bot.command(name="history", aliases=["moves", "kifu"])
@@ -589,12 +853,12 @@ async def join(ctx):
 
     i = idx
 
-    if user.id in (state[i][4][0]+state[i][4][1]):
-        await ctx.send("Player already in this game!")
+    if state[i][1] in ["random", "anarchy", "debug", "vote", "voting"]:
+        await ctx.send("This game has no queue! Anyone can participate by voting with `$play <move>` or `$pass` :P")
         return
 
-    if state[i][1] in ["random", "anarchy", "debug"]:
-        await ctx.send("This game has no queue! No need to join, just `$play` whenever you want :P")
+    if user.id in (state[i][4][0]+state[i][4][1]):
+        await ctx.send("Player already in this game!")
         return
 
     colour = 0 if len(state[i][4][0])<=len(state[i][4][1]) else 1
@@ -621,12 +885,12 @@ async def leave(ctx):
 
     i = idx
 
-    if user.id not in (state[i][4][0]+state[i][4][1]):
-        await ctx.send("Player not in this game!")
+    if state[i][1] in ["random", "anarchy", "debug", "vote", "voting"]:
+        await ctx.send("This game has no queue! No need to leave!")
         return
 
-    if state[i][1] in ["random", "anarchy", "debug"]:
-        await ctx.send("This game has no queue! No need to leave!")
+    if user.id not in (state[i][4][0]+state[i][4][1]):
+        await ctx.send("Player not in this game!")
         return
 
     colour = 0 if (user.id in state[i][4][0]) else 1
@@ -651,6 +915,12 @@ async def queue(ctx):
 
     i = idx
     colour = sgfengine.next_colour(game_key)
+
+    if state[i][1] in ["vote", "voting"]:
+        all_votes = load_votes()
+        vdata = all_votes.get(game_key, {"channel_id": ctx.channel.id, "minutes": 10.0, "deadline": None, "votes": {}})
+        await ctx.send(f"This game is in Voting mode! Check the current standings with `$votes`:\n\n{format_vote_summary(vdata)}")
+        return
 
     if state[i][1] in ["random", "anarchy", "debug"]:
         await ctx.send("This game has no queue! No need to join, just `$play` whenever you want :P")
@@ -729,7 +999,7 @@ async def sgf(ctx):
     await ctx.send(content=f"Current SGF for **#{ctx.channel.name}**:", file=file)
 
 @bot.command()
-async def newgame(ctx, gametype, handicap=0, komi=6.5):
+async def newgame(ctx, gametype, *args):
     if not is_permitted(ctx): return
     game_key = get_game_key(ctx)
 
@@ -738,8 +1008,8 @@ async def newgame(ctx, gametype, handicap=0, komi=6.5):
         return
 
     gametype = gametype.strip().lower()
-    if gametype not in ["queue", "random", "teachers", "anarchy", "debug"]:
-        await ctx.send("Unrecognized game type! Please try `$newgame <queue/random/teachers/anarchy>`")
+    if gametype not in ["queue", "random", "teachers", "anarchy", "debug", "vote", "voting"]:
+        await ctx.send("Unrecognized game type! Please try `$newgame <vote/queue/random/teachers/anarchy>`")
         return
 
     with open("state.txt") as f: state = ast.literal_eval(f.read())
@@ -747,6 +1017,60 @@ async def newgame(ctx, gametype, handicap=0, komi=6.5):
     if find_game(state, ctx) is not None:
         await ctx.send("A game is already active in this channel!")
         return
+
+    if gametype in ["vote", "voting"]:
+        minutes = 10.0
+        handicap = 0
+        komi = 6.5
+        if len(args) >= 1:
+            try:
+                minutes = max(0.5, float(args[0]))
+            except ValueError:
+                await ctx.send("Please specify voting time in minutes, e.g. `$newgame vote 15`")
+                return
+        if len(args) >= 2:
+            try:
+                handicap = int(args[1])
+            except ValueError:
+                handicap = 0
+        if len(args) >= 3:
+            try:
+                komi = float(args[2])
+            except ValueError:
+                komi = 6.5
+
+        sgfengine.new_game(game_key, handicap, komi)
+        state.append((game_key, "vote", [], [], [[], []]))
+
+        all_votes = load_votes()
+        all_votes[game_key] = {
+            "channel_id": ctx.channel.id,
+            "minutes": minutes,
+            "deadline": None,
+            "votes": {}
+        }
+        save_votes(all_votes)
+
+        mins_display = int(minutes) if minutes == int(minutes) else minutes
+        title = f"New Game Started • VOTE Mode ({mins_display} min per move)"
+        file, msg = format_game_message(game_key, state[-1], title_override=title)
+        msg += f"\n*Everyone can vote! The {mins_display}m countdown begins when the first vote is cast with `$play <move>` or `$pass`.*"
+        await ctx.send(content=msg, file=file)
+        with open("state.txt", "w") as f: f.write(repr(state))
+        return
+
+    handicap = 0
+    komi = 6.5
+    if len(args) >= 1:
+        try:
+            handicap = int(args[0])
+        except ValueError:
+            handicap = 0
+    if len(args) >= 2:
+        try:
+            komi = float(args[1])
+        except ValueError:
+            komi = 6.5
 
     sgfengine.new_game(game_key, handicap, komi)
     if gametype == "teachers":
@@ -798,6 +1122,12 @@ async def resign(ctx, arg):
     file = discord.File(archived_filename, filename=friendly_filename)
     await ctx.send(file=file, content=("Black" if arg=="W" else "White")+" wins!")
 
+    # Clean up vote data if present
+    all_votes = load_votes()
+    if game_key in all_votes:
+        all_votes.pop(game_key, None)
+        save_votes(all_votes)
+
     state.pop(idx)
     with open("state.txt", "w") as f: f.write(repr(state))
 
@@ -816,6 +1146,10 @@ async def background_task():
     await bot.wait_until_ready()
     print("Bot ready!")
 
+    if not check_vote_timers.is_running():
+        check_vote_timers.start()
+        print("[RengoBot] Vote timer loop started.")
+
     game = discord.Game("multiplayer Baduk! $help for command list")
     await bot.change_presence(status=discord.Status.online, activity=game)
 
@@ -833,6 +1167,8 @@ async def main():
     except (KeyboardInterrupt, asyncio.CancelledError):
         print("\n[RengoBot] Shutdown signal received. Closing cleanly...")
     finally:
+        if check_vote_timers.is_running():
+            check_vote_timers.stop()
         if bg_task and not bg_task.done():
             bg_task.cancel()
             try:

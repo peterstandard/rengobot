@@ -10,4 +10,6 @@ services:
     volumes:
       - ./data:/data
       - ./board_style.toml:/app/board_style.toml:ro
+      - ./sgfengine.py:/app/sgfengine.py:ro
+      - ./rengobot.py:/app/rengobot.py:ro
 

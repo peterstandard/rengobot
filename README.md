@@ -15,6 +15,7 @@ Make sure to run the bot in an environment with read/write permissions
 
 | Mode | Description | How Teams / Turns Work |
 | :--- | :--- | :--- |
+| **`vote`** *(Collective Voting)* | Everyone in the channel votes for moves. Countdown starts on the first vote. | • `$newgame vote <minutes> [handicap] [komi]`<br>• When a player votes with `$play <move>` or `$pass`, an N-minute timer begins.<br>• Players can change their vote anytime before the deadline.<br>• When the timer expires, the move with the most votes is played (ties broken randomly). |
 | **`random`** *(Casual / Community)* | Open to everyone in the channel without joining a queue. | • Alternates Black / White automatically.<br>• **Restrictions:** No two consecutive moves by the same player, no two consecutive same-color moves by the same player, and cooldown limits apply. |
 | **`anarchy`** *(Free-for-all)* | Open to everyone in the channel with no turn restrictions. | • Alternates Black / White automatically.<br>• **No restrictions:** Consecutive moves and consecutive same-color moves by the same player are permitted. |
 | **`queue`** *(Team Rengo)* | Players join teams via `$join` (balanced evenly). Requires at least 2 players per team. | • **FIFO Queue Rotation:** On Black's turn, only the player at the front of Black's queue can play. Once played, they rotate to the back of the queue and White is pinged. |
@@ -23,9 +24,10 @@ Make sure to run the bot in an environment with read/write permissions
 
 ## Commands
 - `$help`: Show command help
-- `$newgame <queue/random/teachers/anarchy> <handicap> <komi>`: Start a new game (Admin only)
-- `$play <move>`: Play a move (e.g. `$play Q16`, `$play q16`, `$play D4`)
-- `$pass`: Pass your turn (two consecutive passes concludes the game)
+- `$newgame <mode> [options]`: Start a new game (e.g. `$newgame vote 15`, `$newgame random 0 6.5`) (Admin only)
+- `$play <move>`: Play a move or cast your vote (e.g. `$play Q16`, `$play q16`, `$play D4`)
+- `$pass`: Pass your turn or vote to pass
+- `$votes`: View current voting standings and countdown timer (`vote` mode)
 - `$edit <move>`: Correct your last move within 5 minutes
 - `$board`: Display current board state
 - `$history [range]`: Display board with move numbers on stones (e.g. `$history`, `$history 20-50`) (aliases: `$moves`, `$kifu`)
