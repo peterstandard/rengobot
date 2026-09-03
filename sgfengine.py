@@ -64,6 +64,7 @@ def render_png(channel_id, move_numbers=False, move_range=None, out_filename=Non
 def new_game(channel_id, handicap=0, komi=6.5):
     game = sgf.Sgf_game(19)
     game.root.set("KM", float(komi))
+    game.root.set("RU", "AGA")
     handicap = int(handicap)
     if handicap >= 2:
         game.root.set("HA", handicap)
@@ -166,6 +167,7 @@ def get_game_state(channel_id):
 
     handicap = game.root.get("HA") if game.root.has_property("HA") else 0
     komi = game.root.get("KM") if game.root.has_property("KM") else 6.5
+    ruleset = game.root.get("RU") if game.root.has_property("RU") else "AGA"
 
     return {
         "move_count": len(moves),
@@ -176,7 +178,8 @@ def get_game_state(channel_id):
         "captures": {"B": black_captures, "W": white_captures},
         "consecutive_passes": consecutive_passes,
         "handicap": handicap,
-        "komi": komi
+        "komi": komi,
+        "ruleset": ruleset
     }
 
 # outputs to <channel_id>.png

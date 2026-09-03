@@ -166,7 +166,8 @@ def format_game_message(game_key, state_tuple=None, next_player_display=None, pi
     else:
         lines.append(f"{turn_emoji} **{next_colour_name}'s turn!**")
 
-    lines.append(f"**Captures:** ⚫ `{info['captures']['B']}`  |  ⚪ `{info['captures']['W']}`  •  **Info:** Komi `{info['komi']}` | Handicap `{info['handicap']}`")
+    ruleset_str = info.get("ruleset", "AGA")
+    lines.append(f"**Captures:** ⚫ `{info['captures']['B']}`  |  ⚪ `{info['captures']['W']}`  •  **Info:** Ruleset `{ruleset_str}` | Komi `{info['komi']}` | Handicap `{info['handicap']}`")
 
     if info.get("consecutive_passes", 0) >= 2:
         lines.append("⚠️ **Game Over:** Both players passed! Use `$resign <B/W>` to record the winner or `$sgf` for the game record.")
