@@ -52,8 +52,9 @@ teachers = get_int_list("TEACHER_IDS", [])
 permitted_server_ids = get_int_list("PERMITTED_SERVER_IDS", [])
 permitted_channel_ids = get_int_list("PERMITTED_CHANNEL_IDS", [])
 
-white_stone = "<:white_stone:882731089548939314>"
-black_stone = "<:black_stone:882730888453046342>"
+white_stone = os.environ.get("WHITE_STONE_EMOJI", "⚪")
+black_stone = os.environ.get("BLACK_STONE_EMOJI", "⚫")
+
 
 token = os.environ.get("DISCORD_TOKEN")
 if not token:
@@ -148,7 +149,7 @@ def format_game_message(game_key, state_tuple=None, next_player_display=None, pi
     if title_override:
         lines.append(f"### {title_override}")
     elif info["last_move"]:
-        move_colour = "⚫ Black" if info["last_colour"] == "B" else "⚪ White"
+        move_colour = f"{black_stone} Black" if info["last_colour"] == "B" else f"{white_stone} White"
         player_str = f" ({info['last_player']})" if info['last_player'] else ""
         if info["last_move"] == "Pass":
             lines.append(f"### Move #{info['move_count']} • {move_colour}{player_str} Passed")
@@ -158,7 +159,7 @@ def format_game_message(game_key, state_tuple=None, next_player_display=None, pi
         lines.append("### New Game Started")
 
     next_colour_name = "White" if info["next_colour"] == "W" else "Black"
-    turn_emoji = "⚪" if info["next_colour"] == "W" else "⚫"
+    turn_emoji = white_stone if info["next_colour"] == "W" else black_stone
     if ping_mention:
         lines.append(f"{turn_emoji} **{next_colour_name}'s turn:** {ping_mention} ⭐")
     elif next_player_display:
@@ -167,7 +168,7 @@ def format_game_message(game_key, state_tuple=None, next_player_display=None, pi
         lines.append(f"{turn_emoji} **{next_colour_name}'s turn!**")
 
     ruleset_str = info.get("ruleset", "AGA")
-    lines.append(f"**Captures:** ⚫ `{info['captures']['B']}`  |  ⚪ `{info['captures']['W']}`  •  **Info:** Ruleset `{ruleset_str}` | Komi `{info['komi']}` | Handicap `{info['handicap']}`")
+    lines.append(f"**Captures:** {black_stone} `{info['captures']['B']}`  |  {white_stone} `{info['captures']['W']}`  •  **Info:** Ruleset `{ruleset_str}` | Komi `{info['komi']}` | Handicap `{info['handicap']}`")
 
     if info.get("consecutive_passes", 0) >= 2:
         lines.append("⚠️ **Game Over:** Both players passed! Use `$resign <B/W>` to record the winner or `$sgf` for the game record.")
