@@ -5,6 +5,7 @@ token.txt
 .env*.local
 *.sgf
 *.png
+!emojis/*.png
 *.out
 *.sh
 __pycache__/
