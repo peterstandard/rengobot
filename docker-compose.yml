@@ -9,4 +9,5 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./data:/data
+      - ./board_style.toml:/app/board_style.toml:ro
 

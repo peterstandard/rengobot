@@ -41,14 +41,6 @@ def render_png(channel_id, move_numbers=False, move_range=None, out_filename=Non
                 before = parts[0]
                 after = parts[1]
 
-                # Ensure base label color is dark gray (#555555) on the board-labels group
-                last_g = before.rfind('<g')
-                if last_g != -1 and 'fill=' in before[last_g:]:
-                    before = before[:last_g] + re.sub(r'fill="[^"]*"', 'fill="#555555"', before[last_g:], count=1)
-                elif 'fill=' in after[:after.find('>')]:
-                    tag_end = after.find('>')
-                    after = re.sub(r'fill="[^"]*"', 'fill="#555555"', after[:tag_end], count=1) + after[tag_end:]
-
                 # Highlight special star point coordinates in solid black #000000
                 for target in ['>D<', '>K<', '>Q<', '>4<', '>10<', '>16<']:
                     after = after.replace(target, target.replace('>', ' fill="#000000" font-weight="900">'))
