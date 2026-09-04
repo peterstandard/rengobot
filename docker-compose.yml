@@ -10,6 +10,11 @@ services:
     volumes:
       - ./data:/data
       - ./board_style.toml:/app/board_style.toml:ro
+      - ./config.py:/app/config.py:ro
+      - ./channels.py:/app/channels.py:ro
+      - ./state.py:/app/state.py:ro
+      - ./ui.py:/app/ui.py:ro
       - ./sgfengine.py:/app/sgfengine.py:ro
       - ./rengobot.py:/app/rengobot.py:ro
+      - ./modes:/app/modes:ro
 
