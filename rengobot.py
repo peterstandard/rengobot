@@ -415,7 +415,11 @@ async def show_votes(ctx):
         "deadline": None,
         "votes": {}
     })
-    await ctx.send(format_vote_summary(vdata))
+    colour = sgfengine.next_colour(game_key)
+    turn_colour_name = "White" if colour == 1 else "Black"
+    turn_emoji = white_stone if colour == 1 else black_stone
+    turn_header = f"{turn_emoji} **{turn_colour_name} to play!**"
+    await ctx.send(f"{turn_header}\n\n{format_vote_summary(vdata)}")
 
 @bot.command()
 async def help(ctx):
@@ -502,13 +506,18 @@ async def play(ctx, arg):
         all_votes[game_key] = vdata
         save_votes(all_votes)
 
+        colour = sgfengine.next_colour(game_key)
+        turn_colour_name = "White" if colour == 1 else "Black"
+        turn_emoji = white_stone if colour == 1 else black_stone
+        turn_header = f"{turn_emoji} **{turn_colour_name} to play!**"
+
         if old_vote and old_vote != move_formatted:
             ack = f"🔄 {user.mention} changed vote from `{old_vote}` to **`{move_formatted}`**!"
         else:
             ack = f"🗳️ {user.mention} voted for **`{move_formatted}`**!"
 
         summary = format_vote_summary(vdata)
-        await ctx.send(f"{ack}\n\n{summary}")
+        await ctx.send(f"{turn_header}\n{ack}\n\n{summary}")
         return
 
     if state[i][1] in ["queue", "teachers"] and user.id not in state[i][4][0]+state[i][4][1]:
@@ -630,13 +639,18 @@ async def pass_turn(ctx):
         all_votes[game_key] = vdata
         save_votes(all_votes)
 
+        colour = sgfengine.next_colour(game_key)
+        turn_colour_name = "White" if colour == 1 else "Black"
+        turn_emoji = white_stone if colour == 1 else black_stone
+        turn_header = f"{turn_emoji} **{turn_colour_name} to play!**"
+
         if old_vote and old_vote != move_formatted:
             ack = f"🔄 {user.mention} changed vote from `{old_vote}` to **`Pass`**!"
         else:
             ack = f"🗳️ {user.mention} voted to **`Pass`**!"
 
         summary = format_vote_summary(vdata)
-        await ctx.send(f"{ack}\n\n{summary}")
+        await ctx.send(f"{turn_header}\n{ack}\n\n{summary}")
         return
 
     if state[i][1] in ["queue", "teachers"] and user.id not in state[i][4][0]+state[i][4][1]:
